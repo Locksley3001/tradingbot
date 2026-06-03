@@ -669,9 +669,22 @@ async def broadcast_update() -> None:
                 websocket_clients.remove(client)
 
 
-async def get_markets_payload() -> List[Dict[str, Any]]:
+async def get_markets_payload(include_inactive: bool = False, search: str = "") -> List[Dict[str, Any]]:
+    normalized_search = search.strip().upper().replace(" ", "").replace("\\", "/").replace("_", "/")
+    like_search = f"%{normalized_search}%"
+    clauses = []
+    params: List[Any] = []
+    if not include_inactive and not normalized_search:
+        clauses.append("active = 1")
+    if normalized_search:
+        clauses.append("symbol LIKE ?")
+        params.append(like_search)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with conn:
-        rows = conn.execute("SELECT symbol, category, active FROM markets ORDER BY active DESC, symbol").fetchall()
+        rows = conn.execute(
+            f"SELECT symbol, category, active FROM markets {where} ORDER BY active DESC, symbol",
+            params,
+        ).fetchall()
     payload = []
     for row in rows:
         symbol = row["symbol"]
@@ -937,8 +950,8 @@ async def root() -> FileResponse:
 
 
 @app.get("/api/markets")
-async def list_markets() -> JSONResponse:
-    payload = await get_markets_payload()
+async def list_markets(include_inactive: bool = False, search: str = "") -> JSONResponse:
+    payload = await get_markets_payload(include_inactive=include_inactive, search=search)
     return JSONResponse(payload)
 
 
@@ -950,10 +963,14 @@ async def add_market(payload: Dict[str, Any]) -> JSONResponse:
     symbol = normalize_symbol(symbol)
     category = detect_category(symbol)
     with conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO markets (symbol, category, active, created_at) VALUES (?, ?, ?, ?)"
-            , (symbol, category, 1, datetime.utcnow().isoformat())
-        )
+        existing = conn.execute("SELECT symbol FROM markets WHERE symbol = ?", (symbol,)).fetchone()
+        if existing:
+            conn.execute("UPDATE markets SET active = 1, category = ? WHERE symbol = ?", (category, symbol))
+        else:
+            conn.execute(
+                "INSERT INTO markets (symbol, category, active, created_at) VALUES (?, ?, ?, ?)",
+                (symbol, category, 1, datetime.utcnow().isoformat()),
+            )
     await ensure_market_task(symbol)
     await broadcast_update()
     return JSONResponse({"symbol": symbol, "category": category})

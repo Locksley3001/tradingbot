@@ -19,32 +19,40 @@ let emaSeries;
 let upperSeries;
 let lowerSeries;
 let markerApi;
+let searchDebounce;
 
 function playAlertTone() {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     const context = new AudioContext();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
+    const master = context.createGain();
+    master.gain.setValueAtTime(0.0001, context.currentTime);
+    master.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.04);
+    master.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.55);
+    master.connect(context.destination);
 
-    oscillator.type = 'sine';
-    oscillator.frequency.value = 520;
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02);
-
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.35);
-    oscillator.stop(context.currentTime + 0.35);
+    [
+      { frequency: 330, start: 0, duration: 0.24 },
+      { frequency: 440, start: 0.18, duration: 0.28 },
+    ].forEach((note) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = note.frequency;
+      gain.gain.setValueAtTime(0.0001, context.currentTime + note.start);
+      gain.gain.exponentialRampToValueAtTime(0.6, context.currentTime + note.start + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + note.start + note.duration);
+      oscillator.connect(gain);
+      gain.connect(master);
+      oscillator.start(context.currentTime + note.start);
+      oscillator.stop(context.currentTime + note.start + note.duration + 0.04);
+    });
 
     setTimeout(() => {
       context.close().catch(() => {});
-    }, 500);
+    }, 750);
   } catch (error) {
-    const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-    audio.volume = 0.4;
-    audio.play().catch(() => {});
+    // Audio is optional; keep failures silent instead of falling back to a harsh alarm.
   }
 }
 
@@ -123,12 +131,24 @@ function resizeChart() {
 
 window.addEventListener('resize', resizeChart);
 
-async function fetchMarkets() {
-  const res = await fetch('/api/markets', { cache: 'no-store' });
+async function fetchMarkets(searchTerm = '') {
+  const query = searchTerm.trim();
+  const params = new URLSearchParams();
+  if (query) {
+    params.set('search', query);
+    params.set('include_inactive', 'true');
+  }
+  const url = params.toString() ? `/api/markets?${params}` : '/api/markets';
+  const res = await fetch(url, { cache: 'no-store' });
   markets = await res.json();
-  if (!selectedSymbol && markets.length) selectedSymbol = markets[0].symbol;
+  const selectedVisible = markets.some((market) => market.symbol === selectedSymbol);
+  if (!query && (!selectedSymbol || !selectedVisible)) {
+    selectedSymbol = markets[0]?.symbol || null;
+  } else if (!selectedSymbol && markets.length) {
+    selectedSymbol = markets[0].symbol;
+  }
   renderMarketList();
-  if (selectedSymbol) await renderSelected(selectedSymbol);
+  if (selectedSymbol && (!query || selectedVisible)) await renderSelected(selectedSymbol);
 }
 
 async function fetchCandles(symbol) {
@@ -302,14 +322,14 @@ function renderMarketList() {
 async function toggleMarket(symbol) {
   const res = await fetch(`/api/markets/${encodeURIComponent(symbol)}/toggle`, { method: 'PATCH' });
   if (!res.ok) console.error('Toggle failed', await res.text());
-  await fetchMarkets();
+  await fetchMarkets(marketInput.value.trim());
 }
 
 async function deleteMarket(symbol) {
   if (!confirm(`Eliminar mercado ${symbol}?`)) return;
   const res = await fetch(`/api/markets/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
   if (!res.ok) console.error('Delete failed', await res.text());
-  await fetchMarkets();
+  await fetchMarkets(marketInput.value.trim());
 }
 
 addMarketButton.addEventListener('click', async () => {
@@ -323,9 +343,18 @@ addMarketButton.addEventListener('click', async () => {
   if (!res.ok) {
     alert(`Error al agregar mercado: ${await res.text()}`);
   } else {
+    const created = await res.json();
+    selectedSymbol = created.symbol;
     marketInput.value = '';
-    await fetchMarkets();
+    await fetchMarkets('');
   }
+});
+
+marketInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    fetchMarkets(marketInput.value.trim());
+  }, 250);
 });
 
 marketInput.addEventListener('keydown', (event) => {
@@ -385,9 +414,11 @@ async function initWebSocket() {
   socket.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data);
-      markets = data.markets || [];
-      if (!selectedSymbol && markets.length) selectedSymbol = markets[0].symbol;
-      renderMarketList();
+      if (!marketInput.value.trim()) {
+        markets = data.markets || [];
+        if (!selectedSymbol && markets.length) selectedSymbol = markets[0].symbol;
+        renderMarketList();
+      }
       const selectedMarket = markets.find((m) => m.symbol === selectedSymbol);
       if (selectedMarket) await renderSelected(selectedSymbol, selectedMarket);
       renderHistory(data.signals || []);
