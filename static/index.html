@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alertas Blitz - Opciones Binarias</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="/static/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>Blitz Signals</h1>
+        <button id="silenceButton" class="silent-btn">Silenciar alertas</button>
+      </div>
+      <div class="market-add">
+        <input id="marketInput" placeholder="Agregar mercado (BTC/USD, ETH/USD, EUR/USD)" />
+        <button id="addMarketButton">Agregar</button>
+      </div>
+      <div id="marketList" class="market-list"></div>
+    </aside>
+
+    <main class="main-panel">
+      <div class="chart-header">
+        <div>
+          <h2 id="selectedSymbol">Selecciona un mercado</h2>
+          <p id="selectedInfo">Últimas 60 velas 1m · Señales en tiempo real</p>
+        </div>
+        <div class="chart-tools">
+          <button id="telegramTestButton" class="test-btn">Probar Telegram</button>
+          <div class="score-badge" id="selectedScore">0</div>
+        </div>
+      </div>
+      <div id="chart" class="chart"></div>
+      <div id="telegramStatus" class="telegram-status"></div>
+      <div class="signal-summary" id="signalSummary"></div>
+    </main>
+
+    <aside class="history-panel">
+      <div class="history-header">
+        <h3>Historial de señales</h3>
+      </div>
+      <div class="history-list" id="historyList"></div>
+    </aside>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
