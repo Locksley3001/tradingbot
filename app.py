@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from aiohttp import ClientTimeout
 import websockets
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -221,7 +222,7 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
             rest_symbol = symbol.replace("/", "").upper()
             url = f"https://api.binance.com/api/v3/klines?symbol={rest_symbol}&interval=1m&limit=60"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=20) as response:
+            async with session.get(url, timeout=ClientTimeout(total=20)) as response:
                 data = await response.json()
                 if response.status != 200 or not isinstance(data, list):
                     message = data.get("message") or data.get("msg") if isinstance(data, dict) else f"HTTP {response.status}"
@@ -247,7 +248,7 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
             "format": "JSON",
         }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=20) as response:
+            async with session.get(url, params=params, timeout=ClientTimeout(total=20)) as response:
                 data = await response.json()
                 if response.status != 200 or data.get("status") == "error":
                     message = data.get("message") or f"HTTP {response.status}"
@@ -623,7 +624,7 @@ async def send_telegram_message(text: str) -> Dict[str, Any]:
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload, timeout=10) as response:
+            async with session.post(url, json=payload, timeout=ClientTimeout(total=10)) as response:
                 body = await response.json(content_type=None)
                 if response.status == 200 and body.get("ok"):
                     return {"ok": True}
