@@ -236,9 +236,11 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
     else:
         if not TWELVE_DATA_API_KEY:
             raise RuntimeError("Falta TWELVE_DATA_API_KEY")
+        # Twelve Data para Forex acepta EUR/USD o EURUSD, pero es más confiable sin la barra
+        symbol_for_api = symbol.replace("/", "") if "/" in symbol else symbol
         url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": symbol,
+            "symbol": symbol_for_api,
             "interval": "1min",
             "outputsize": 60,
             "apikey": TWELVE_DATA_API_KEY,
