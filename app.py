@@ -247,49 +247,36 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
                 ]
                 return sorted(candles, key=lambda candle: candle["time"])[-60:]
     else:
-        if not TWELVE_DATA_API_KEY:
-            raise RuntimeError("Falta TWELVE_DATA_API_KEY")
-        symbol_for_api = twelvedata_api_symbol(symbol)
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": symbol_for_api,
-            "interval": "1min",
-            "outputsize": 60,
-            "apikey": TWELVE_DATA_API_KEY,
-            "format": "JSON",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=ClientTimeout(total=20)) as response:
-                data = await response.json()
-                if response.status != 200 or data.get("status") == "error":
-                    message = data.get("message") or f"HTTP {response.status}"
-                    raise RuntimeError(f"Twelve Data: {message}")
-                values = data.get("values") or []
-                candles = [candle_from_twelvedata(item) for item in reversed(values)]
-                if not candles:
-                    raise RuntimeError(f"Twelve Data no devolvió velas para {symbol}")
-                return candles
+        return await fetch_twelvedata_candles(symbol, 60)
 
 
-async def fetch_twelvedata_price(symbol: str) -> float:
+async def fetch_twelvedata_candles(symbol: str, outputsize: int = 5) -> List[Dict[str, Any]]:
     if not TWELVE_DATA_API_KEY:
         raise RuntimeError("Falta TWELVE_DATA_API_KEY")
-    url = "https://api.twelvedata.com/price"
+    url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": twelvedata_api_symbol(symbol),
+        "interval": "1min",
+        "outputsize": outputsize,
         "apikey": TWELVE_DATA_API_KEY,
         "format": "JSON",
     }
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, timeout=ClientTimeout(total=15)) as response:
+        async with session.get(url, params=params, timeout=ClientTimeout(total=20)) as response:
             data = await response.json()
             if response.status != 200 or data.get("status") == "error":
                 message = data.get("message") or f"HTTP {response.status}"
-                raise RuntimeError(f"Twelve Data price: {message}")
-            price = parse_float(data.get("price"))
-            if price <= 0:
-                raise RuntimeError(f"Twelve Data no devolvió precio válido para {symbol}")
-            return price
+                raise RuntimeError(f"Twelve Data: {message}")
+            values = data.get("values") or []
+            candles = [candle_from_twelvedata(item) for item in reversed(values)]
+            if not candles:
+                raise RuntimeError(f"Twelve Data no devolvió velas para {symbol}")
+            return candles
+
+
+def add_candles(symbol: str, candles: List[Dict[str, Any]]) -> None:
+    for candle in sorted(candles, key=lambda item: item["time"]):
+        add_candle(symbol, candle)
 
 
 def add_candle(symbol: str, candle: Dict[str, Any]) -> None:
@@ -971,11 +958,10 @@ async def twelvedata_websocket_listener(symbol: str) -> None:
                 message = await asyncio.wait_for(ws.recv(), timeout=max(15, min(TWELVE_DATA_POLL_SECONDS, 60)))
             except asyncio.TimeoutError:
                 if time.time() - last_tick >= TWELVE_DATA_POLL_SECONDS:
-                    price = await fetch_twelvedata_price(symbol)
-                    add_price_tick(symbol, price)
+                    add_candles(symbol, await fetch_twelvedata_candles(symbol, 5))
                     state = market_states.get(symbol)
                     if state:
-                        state["data_status"] = f"Datos por polling ({TWELVE_DATA_POLL_SECONDS}s)"
+                        state["data_status"] = f"Velas OHLC por polling ({TWELVE_DATA_POLL_SECONDS}s)"
                         state["last_error"] = ""
                     last_tick = time.time()
                     await update_market_state(symbol)
@@ -996,11 +982,10 @@ async def twelvedata_websocket_listener(symbol: str) -> None:
 
 async def twelvedata_polling_loop(symbol: str) -> None:
     while True:
-        price = await fetch_twelvedata_price(symbol)
-        add_price_tick(symbol, price)
+        add_candles(symbol, await fetch_twelvedata_candles(symbol, 5))
         state = market_states.get(symbol)
         if state:
-            state["data_status"] = f"Datos por polling ({TWELVE_DATA_POLL_SECONDS}s)"
+            state["data_status"] = f"Velas OHLC por polling ({TWELVE_DATA_POLL_SECONDS}s)"
             state["last_error"] = ""
         await update_market_state(symbol)
         await broadcast_update()

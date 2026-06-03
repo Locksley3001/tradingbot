@@ -143,6 +143,15 @@ button {
   border-color: rgba(255, 92, 124, 0.45);
 }
 
+.test-btn.secondary {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.test-btn.secondary:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
 .market-list,
 .history-list {
   overflow-y: auto;

@@ -9,6 +9,7 @@ const addMarketButton = document.getElementById('addMarketButton');
 const silenceButton = document.getElementById('silenceButton');
 const telegramTestButton = document.getElementById('telegramTestButton');
 const telegramStatusEl = document.getElementById('telegramStatus');
+const soundTestButton = document.getElementById('soundTestButton');
 
 let markets = [];
 let selectedSymbol = null;
@@ -20,11 +21,16 @@ let upperSeries;
 let lowerSeries;
 let markerApi;
 let searchDebounce;
+let websocketPrimed = false;
+const playedSignalKeys = new Set();
 
-function playAlertTone() {
+async function playAlertTone() {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     const context = new AudioContext();
+    if (context.state === 'suspended') {
+      await context.resume();
+    }
     const master = context.createGain();
     master.gain.setValueAtTime(0.0001, context.currentTime);
     master.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.04);
@@ -51,9 +57,16 @@ function playAlertTone() {
     setTimeout(() => {
       context.close().catch(() => {});
     }, 750);
+    return true;
   } catch (error) {
-    // Audio is optional; keep failures silent instead of falling back to a harsh alarm.
+    console.warn('No se pudo reproducir el sonido de alerta', error);
+    return false;
   }
+}
+
+function signalKey(market) {
+  if (!market || market.signal_status !== 'confirmed' || market.direction === 'none') return '';
+  return `${market.symbol}:${market.direction}:${market.signal_time || ''}:${market.score}`;
 }
 
 function createSeries(type, options) {
@@ -367,6 +380,14 @@ silenceButton.addEventListener('click', () => {
   silenceButton.classList.toggle('muted', muteAlerts);
 });
 
+soundTestButton.addEventListener('click', async () => {
+  soundTestButton.disabled = true;
+  await playAlertTone();
+  setTimeout(() => {
+    soundTestButton.disabled = false;
+  }, 700);
+});
+
 telegramTestButton.addEventListener('click', async () => {
   telegramStatusEl.textContent = 'Enviando prueba...';
   telegramTestButton.disabled = true;
@@ -422,8 +443,21 @@ async function initWebSocket() {
       const selectedMarket = markets.find((m) => m.symbol === selectedSymbol);
       if (selectedMarket) await renderSelected(selectedSymbol, selectedMarket);
       renderHistory(data.signals || []);
-      if (!muteAlerts && selectedMarket?.score >= 6) {
-        playAlertTone();
+      if (!websocketPrimed) {
+        (data.markets || []).forEach((market) => {
+          const key = signalKey(market);
+          if (key) playedSignalKeys.add(key);
+        });
+        websocketPrimed = true;
+        return;
+      }
+      const newAlert = (data.markets || []).find((market) => {
+        const key = signalKey(market);
+        return key && market.active && market.score >= 4 && !playedSignalKeys.has(key);
+      });
+      if (newAlert) {
+        playedSignalKeys.add(signalKey(newAlert));
+        if (!muteAlerts) await playAlertTone();
       }
     } catch (error) {
       console.error('Error al procesar mensaje WebSocket:', error);
