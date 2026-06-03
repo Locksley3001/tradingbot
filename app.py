@@ -31,8 +31,6 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
-print(f"Twelve Data API key loaded: {'YES' if TWELVE_DATA_API_KEY else 'NO'}")
-print(f"Telegram token loaded: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}, chat id loaded: {'YES' if TELEGRAM_CHAT_ID else 'NO'}")
 MIN_SCORE_TO_ALERT = int(os.getenv("MIN_SCORE_TO_ALERT", "4"))
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "180"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "alerts.db")
@@ -239,11 +237,9 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
     else:
         if not TWELVE_DATA_API_KEY:
             raise RuntimeError("Falta TWELVE_DATA_API_KEY")
-        # Twelve Data usa el símbolo con barra para divisas Forex
-        symbol_for_api = symbol
         url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": symbol_for_api,
+            "symbol": symbol,
             "interval": "1min",
             "outputsize": 60,
             "apikey": TWELVE_DATA_API_KEY,
