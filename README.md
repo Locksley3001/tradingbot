@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Alertas de Trading Blitz
 
 Aplicación web de señales para opciones binarias en formato Blitz (IQ Option) con monitoreo de múltiples mercados y alertas a Telegram.
@@ -101,3 +102,6 @@ Luego abre `http://127.0.0.1:8000`.
 - El sistema sugiere expiraciones entre 30 segundos y 3 minutos según la señal.
 - Solo alerta por Telegram cuando la señal tiene puntaje mayor o igual a `MIN_SCORE_TO_ALERT`.
 - Se evita enviar más de una alerta por par cada `ALERT_COOLDOWN_SECONDS` segundos.
+=======
+# tradingbot
+>>>>>>> 508c86c71cb22e0ca6fc8db62191c2d9be4b0bd3

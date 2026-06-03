@@ -20,6 +20,34 @@ let upperSeries;
 let lowerSeries;
 let markerApi;
 
+function playAlertTone() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 520;
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02);
+
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.35);
+    oscillator.stop(context.currentTime + 0.35);
+
+    setTimeout(() => {
+      context.close().catch(() => {});
+    }, 500);
+  } catch (error) {
+    const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+    audio.volume = 0.4;
+    audio.play().catch(() => {});
+  }
+}
+
 function createSeries(type, options) {
   if (!chart || typeof LightweightCharts === 'undefined') return null;
   const legacyName = type === 'candles' ? 'addCandlestickSeries' : 'addLineSeries';
@@ -364,8 +392,7 @@ async function initWebSocket() {
       if (selectedMarket) await renderSelected(selectedSymbol, selectedMarket);
       renderHistory(data.signals || []);
       if (!muteAlerts && selectedMarket?.score >= 6) {
-        const audio = new Audio('https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg');
-        audio.play().catch(() => {});
+        playAlertTone();
       }
     } catch (error) {
       console.error('Error al procesar mensaje WebSocket:', error);

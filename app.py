@@ -641,14 +641,15 @@ async def send_telegram_alert(
     analysis: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now = time.time()
-    cooldown = alert_timestamps.get(symbol, 0)
+    cooldown_key = f"{symbol}:{direction}"
+    cooldown = alert_timestamps.get(cooldown_key, 0)
     if now - cooldown < ALERT_COOLDOWN_SECONDS:
         return {"ok": False, "skipped": "cooldown"}
     if score < MIN_SCORE_TO_ALERT:
         return {"ok": False, "skipped": "score"}
     result = await send_telegram_message(compose_telegram_alert(symbol, direction, score, tags, expiration, price, analysis))
     if result.get("ok"):
-        alert_timestamps[symbol] = now
+        alert_timestamps[cooldown_key] = now
     return result
 
 
