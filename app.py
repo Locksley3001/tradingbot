@@ -36,6 +36,7 @@ ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "180"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "alerts.db")
 NO_CANDLE_RETRY_SECONDS = int(os.getenv("NO_CANDLE_RETRY_SECONDS", "300"))
 MAX_SIGNAL_AGE_SECONDS = int(os.getenv("MAX_SIGNAL_AGE_SECONDS", "180"))
+TWELVE_DATA_POLL_SECONDS = int(os.getenv("TWELVE_DATA_POLL_SECONDS", "60"))
 
 DEFAULT_MARKETS = [
     "EUR/USD",
@@ -172,6 +173,17 @@ def market_data_source(symbol: str, category: str) -> str:
     return "Twelve Data"
 
 
+def twelvedata_api_symbol(symbol: str) -> str:
+    category = detect_category(symbol)
+    if category == "forex":
+        return symbol.replace("/", "")
+    return symbol.replace("/", "") if "/" in symbol and category != "crypto" else symbol
+
+
+def same_market_symbol(left: str, right: str) -> bool:
+    return normalize_symbol(left) == normalize_symbol(right) or left.replace("/", "").upper() == right.replace("/", "").upper()
+
+
 def parse_float(value: Any) -> float:
     try:
         return float(value)
@@ -237,8 +249,7 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
     else:
         if not TWELVE_DATA_API_KEY:
             raise RuntimeError("Falta TWELVE_DATA_API_KEY")
-        # Twelve Data para Forex acepta EUR/USD o EURUSD, pero es más confiable sin la barra
-        symbol_for_api = symbol.replace("/", "") if "/" in symbol else symbol
+        symbol_for_api = twelvedata_api_symbol(symbol)
         url = "https://api.twelvedata.com/time_series"
         params = {
             "symbol": symbol_for_api,
@@ -258,6 +269,27 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
                 if not candles:
                     raise RuntimeError(f"Twelve Data no devolvió velas para {symbol}")
                 return candles
+
+
+async def fetch_twelvedata_price(symbol: str) -> float:
+    if not TWELVE_DATA_API_KEY:
+        raise RuntimeError("Falta TWELVE_DATA_API_KEY")
+    url = "https://api.twelvedata.com/price"
+    params = {
+        "symbol": twelvedata_api_symbol(symbol),
+        "apikey": TWELVE_DATA_API_KEY,
+        "format": "JSON",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, timeout=ClientTimeout(total=15)) as response:
+            data = await response.json()
+            if response.status != 200 or data.get("status") == "error":
+                message = data.get("message") or f"HTTP {response.status}"
+                raise RuntimeError(f"Twelve Data price: {message}")
+            price = parse_float(data.get("price"))
+            if price <= 0:
+                raise RuntimeError(f"Twelve Data no devolvió precio válido para {symbol}")
+            return price
 
 
 def add_candle(symbol: str, candle: Dict[str, Any]) -> None:
@@ -914,17 +946,65 @@ async def twelvedata_listener(symbol: str) -> None:
     if not TWELVE_DATA_API_KEY:
         await asyncio.sleep(10)
         return
+    try:
+        await twelvedata_websocket_listener(symbol)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        state = market_states.get(symbol)
+        if state:
+            state["data_status"] = f"WebSocket no disponible; polling cada {TWELVE_DATA_POLL_SECONDS}s"
+            state["last_error"] = str(exc)
+        await broadcast_update()
+        await twelvedata_polling_loop(symbol)
+
+
+async def twelvedata_websocket_listener(symbol: str) -> None:
     endpoint = "wss://ws.twelvedata.com/v1/quotes/price"
+    symbol_for_api = twelvedata_api_symbol(symbol)
+    last_tick = time.time()
     async with websockets.connect(f"{endpoint}?apikey={TWELVE_DATA_API_KEY}", ping_interval=20, ping_timeout=10) as ws:
-        subscribe = {"action": "subscribe", "symbols": [symbol]}
+        subscribe = {"action": "subscribe", "symbols": [symbol_for_api]}
         await ws.send(json.dumps(subscribe))
         while True:
-            message = await ws.recv()
+            try:
+                message = await asyncio.wait_for(ws.recv(), timeout=max(15, min(TWELVE_DATA_POLL_SECONDS, 60)))
+            except asyncio.TimeoutError:
+                if time.time() - last_tick >= TWELVE_DATA_POLL_SECONDS:
+                    price = await fetch_twelvedata_price(symbol)
+                    add_price_tick(symbol, price)
+                    state = market_states.get(symbol)
+                    if state:
+                        state["data_status"] = f"Datos por polling ({TWELVE_DATA_POLL_SECONDS}s)"
+                        state["last_error"] = ""
+                    last_tick = time.time()
+                    await update_market_state(symbol)
+                    await broadcast_update()
+                continue
+
             payload = json.loads(message)
-            if isinstance(payload, dict) and payload.get("symbol") == symbol:
-                price = parse_float(payload.get("price", 0))
+            if isinstance(payload, dict) and payload.get("event") in ("subscribe-status", "heartbeat"):
+                continue
+            if isinstance(payload, dict) and same_market_symbol(str(payload.get("symbol", "")), symbol):
+                price = parse_float(payload.get("price", payload.get("close", 0)))
+                if price <= 0:
+                    continue
                 add_price_tick(symbol, price, parse_float(payload.get("volume", 0)))
+                last_tick = time.time()
                 await update_market_state(symbol)
+
+
+async def twelvedata_polling_loop(symbol: str) -> None:
+    while True:
+        price = await fetch_twelvedata_price(symbol)
+        add_price_tick(symbol, price)
+        state = market_states.get(symbol)
+        if state:
+            state["data_status"] = f"Datos por polling ({TWELVE_DATA_POLL_SECONDS}s)"
+            state["last_error"] = ""
+        await update_market_state(symbol)
+        await broadcast_update()
+        await asyncio.sleep(TWELVE_DATA_POLL_SECONDS)
 
 
 @app.on_event("startup")

@@ -70,12 +70,16 @@ Luego abre `http://127.0.0.1:8000`.
 - Activa/desactiva mercados sin perder su configuración.
 - Selecciona un mercado para ver su gráfico y últimas señales.
 - Usa el botón de silencio para desactivar sonidos de alerta.
+- Al abrir la página solo se cargan los mercados activos. Los mercados desactivados aparecen al buscarlos.
+- Escribe un símbolo exacto y pulsa `Activar` para crearlo o reactivarlo.
 
 ## Fuentes de datos
 
 - Los pares cripto contra dólar, como `BTC/USD` y `ETH/USD`, usan Coinbase Exchange.
 - Los pares cripto contra stablecoin, como `BTC/USDT` y `ETH/USDT`, usan Binance Spot.
 - Forex y acciones usan Twelve Data y consumen la cuota configurada en `TWELVE_DATA_API_KEY`.
+- Twelve Data intenta usar WebSocket; si el plan no lo entrega, actualiza con `/price` cada `TWELVE_DATA_POLL_SECONDS`.
+- En plan gratuito conviene mantener pocos mercados Twelve Data activos a la vez para no agotar créditos.
 - Cada broker forma sus propias velas. Para comparar señales con una operación en USD, activa el par `*/USD` y evita usar su variante `*/USDT`.
 
 ## Cómo hospedar gratis 24/7
