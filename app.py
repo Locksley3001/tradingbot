@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from aiohttp import ClientTimeout
 import websockets
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -36,14 +35,8 @@ ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "180"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "alerts.db")
 NO_CANDLE_RETRY_SECONDS = int(os.getenv("NO_CANDLE_RETRY_SECONDS", "300"))
 MAX_SIGNAL_AGE_SECONDS = int(os.getenv("MAX_SIGNAL_AGE_SECONDS", "180"))
-TWELVE_DATA_POLL_SECONDS = int(os.getenv("TWELVE_DATA_POLL_SECONDS", "60"))
 
 DEFAULT_MARKETS = [
-    "EUR/USD",
-    "GBP/USD",
-    "USD/JPY",
-    "AUD/USD",
-    "EUR/GBP",
     "BTC/USD",
     "ETH/USD",
 ]
@@ -173,17 +166,6 @@ def market_data_source(symbol: str, category: str) -> str:
     return "Twelve Data"
 
 
-def twelvedata_api_symbol(symbol: str) -> str:
-    category = detect_category(symbol)
-    if category == "forex":
-        return symbol.replace("/", "")
-    return symbol.replace("/", "") if "/" in symbol and category != "crypto" else symbol
-
-
-def same_market_symbol(left: str, right: str) -> bool:
-    return normalize_symbol(left) == normalize_symbol(right) or left.replace("/", "").upper() == right.replace("/", "").upper()
-
-
 def parse_float(value: Any) -> float:
     try:
         return float(value)
@@ -234,7 +216,7 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
             rest_symbol = symbol.replace("/", "").upper()
             url = f"https://api.binance.com/api/v3/klines?symbol={rest_symbol}&interval=1m&limit=60"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=ClientTimeout(total=20)) as response:
+            async with session.get(url, timeout=20) as response:
                 data = await response.json()
                 if response.status != 200 or not isinstance(data, list):
                     message = data.get("message") or data.get("msg") if isinstance(data, dict) else f"HTTP {response.status}"
@@ -247,36 +229,27 @@ async def fetch_initial_candles(symbol: str, category: str) -> List[Dict[str, An
                 ]
                 return sorted(candles, key=lambda candle: candle["time"])[-60:]
     else:
-        return await fetch_twelvedata_candles(symbol, 60)
-
-
-async def fetch_twelvedata_candles(symbol: str, outputsize: int = 5) -> List[Dict[str, Any]]:
-    if not TWELVE_DATA_API_KEY:
-        raise RuntimeError("Falta TWELVE_DATA_API_KEY")
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": twelvedata_api_symbol(symbol),
-        "interval": "1min",
-        "outputsize": outputsize,
-        "apikey": TWELVE_DATA_API_KEY,
-        "format": "JSON",
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, timeout=ClientTimeout(total=20)) as response:
-            data = await response.json()
-            if response.status != 200 or data.get("status") == "error":
-                message = data.get("message") or f"HTTP {response.status}"
-                raise RuntimeError(f"Twelve Data: {message}")
-            values = data.get("values") or []
-            candles = [candle_from_twelvedata(item) for item in reversed(values)]
-            if not candles:
-                raise RuntimeError(f"Twelve Data no devolvió velas para {symbol}")
-            return candles
-
-
-def add_candles(symbol: str, candles: List[Dict[str, Any]]) -> None:
-    for candle in sorted(candles, key=lambda item: item["time"]):
-        add_candle(symbol, candle)
+        if not TWELVE_DATA_API_KEY:
+            raise RuntimeError("Falta TWELVE_DATA_API_KEY")
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            "symbol": symbol,
+            "interval": "1min",
+            "outputsize": 60,
+            "apikey": TWELVE_DATA_API_KEY,
+            "format": "JSON",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=20) as response:
+                data = await response.json()
+                if response.status != 200 or data.get("status") == "error":
+                    message = data.get("message") or f"HTTP {response.status}"
+                    raise RuntimeError(f"Twelve Data: {message}")
+                values = data.get("values") or []
+                candles = [candle_from_twelvedata(item) for item in reversed(values)]
+                if not candles:
+                    raise RuntimeError(f"Twelve Data no devolvió velas para {symbol}")
+                return candles
 
 
 def add_candle(symbol: str, candle: Dict[str, Any]) -> None:
@@ -643,7 +616,7 @@ async def send_telegram_message(text: str) -> Dict[str, Any]:
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload, timeout=ClientTimeout(total=10)) as response:
+            async with session.post(url, json=payload, timeout=10) as response:
                 body = await response.json(content_type=None)
                 if response.status == 200 and body.get("ok"):
                     return {"ok": True}
@@ -663,15 +636,14 @@ async def send_telegram_alert(
     analysis: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now = time.time()
-    cooldown_key = f"{symbol}:{direction}"
-    cooldown = alert_timestamps.get(cooldown_key, 0)
+    cooldown = alert_timestamps.get(symbol, 0)
     if now - cooldown < ALERT_COOLDOWN_SECONDS:
         return {"ok": False, "skipped": "cooldown"}
     if score < MIN_SCORE_TO_ALERT:
         return {"ok": False, "skipped": "score"}
     result = await send_telegram_message(compose_telegram_alert(symbol, direction, score, tags, expiration, price, analysis))
     if result.get("ok"):
-        alert_timestamps[cooldown_key] = now
+        alert_timestamps[symbol] = now
     return result
 
 
@@ -688,22 +660,9 @@ async def broadcast_update() -> None:
                 websocket_clients.remove(client)
 
 
-async def get_markets_payload(include_inactive: bool = False, search: str = "") -> List[Dict[str, Any]]:
-    normalized_search = search.strip().upper().replace(" ", "").replace("\\", "/").replace("_", "/")
-    like_search = f"%{normalized_search}%"
-    clauses = []
-    params: List[Any] = []
-    if not include_inactive and not normalized_search:
-        clauses.append("active = 1")
-    if normalized_search:
-        clauses.append("symbol LIKE ?")
-        params.append(like_search)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+async def get_markets_payload() -> List[Dict[str, Any]]:
     with conn:
-        rows = conn.execute(
-            f"SELECT symbol, category, active FROM markets {where} ORDER BY active DESC, symbol",
-            params,
-        ).fetchall()
+        rows = conn.execute("SELECT symbol, category, active FROM markets ORDER BY active DESC, symbol").fetchall()
     payload = []
     for row in rows:
         symbol = row["symbol"]
@@ -933,63 +892,17 @@ async def twelvedata_listener(symbol: str) -> None:
     if not TWELVE_DATA_API_KEY:
         await asyncio.sleep(10)
         return
-    try:
-        await twelvedata_websocket_listener(symbol)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        state = market_states.get(symbol)
-        if state:
-            state["data_status"] = f"WebSocket no disponible; polling cada {TWELVE_DATA_POLL_SECONDS}s"
-            state["last_error"] = str(exc)
-        await broadcast_update()
-        await twelvedata_polling_loop(symbol)
-
-
-async def twelvedata_websocket_listener(symbol: str) -> None:
     endpoint = "wss://ws.twelvedata.com/v1/quotes/price"
-    symbol_for_api = twelvedata_api_symbol(symbol)
-    last_tick = time.time()
     async with websockets.connect(f"{endpoint}?apikey={TWELVE_DATA_API_KEY}", ping_interval=20, ping_timeout=10) as ws:
-        subscribe = {"action": "subscribe", "symbols": [symbol_for_api]}
+        subscribe = {"action": "subscribe", "symbols": [symbol]}
         await ws.send(json.dumps(subscribe))
         while True:
-            try:
-                message = await asyncio.wait_for(ws.recv(), timeout=max(15, min(TWELVE_DATA_POLL_SECONDS, 60)))
-            except asyncio.TimeoutError:
-                if time.time() - last_tick >= TWELVE_DATA_POLL_SECONDS:
-                    add_candles(symbol, await fetch_twelvedata_candles(symbol, 5))
-                    state = market_states.get(symbol)
-                    if state:
-                        state["data_status"] = f"Velas OHLC por polling ({TWELVE_DATA_POLL_SECONDS}s)"
-                        state["last_error"] = ""
-                    last_tick = time.time()
-                    await update_market_state(symbol)
-                    await broadcast_update()
-                continue
-
+            message = await ws.recv()
             payload = json.loads(message)
-            if isinstance(payload, dict) and payload.get("event") in ("subscribe-status", "heartbeat"):
-                continue
-            if isinstance(payload, dict) and same_market_symbol(str(payload.get("symbol", "")), symbol):
-                price = parse_float(payload.get("price", payload.get("close", 0)))
-                if price <= 0:
-                    continue
+            if isinstance(payload, dict) and payload.get("symbol") == symbol:
+                price = parse_float(payload.get("price", 0))
                 add_price_tick(symbol, price, parse_float(payload.get("volume", 0)))
-                last_tick = time.time()
                 await update_market_state(symbol)
-
-
-async def twelvedata_polling_loop(symbol: str) -> None:
-    while True:
-        add_candles(symbol, await fetch_twelvedata_candles(symbol, 5))
-        state = market_states.get(symbol)
-        if state:
-            state["data_status"] = f"Velas OHLC por polling ({TWELVE_DATA_POLL_SECONDS}s)"
-            state["last_error"] = ""
-        await update_market_state(symbol)
-        await broadcast_update()
-        await asyncio.sleep(TWELVE_DATA_POLL_SECONDS)
 
 
 @app.on_event("startup")
@@ -1015,8 +928,8 @@ async def root() -> FileResponse:
 
 
 @app.get("/api/markets")
-async def list_markets(include_inactive: bool = False, search: str = "") -> JSONResponse:
-    payload = await get_markets_payload(include_inactive=include_inactive, search=search)
+async def list_markets() -> JSONResponse:
+    payload = await get_markets_payload()
     return JSONResponse(payload)
 
 
@@ -1028,14 +941,10 @@ async def add_market(payload: Dict[str, Any]) -> JSONResponse:
     symbol = normalize_symbol(symbol)
     category = detect_category(symbol)
     with conn:
-        existing = conn.execute("SELECT symbol FROM markets WHERE symbol = ?", (symbol,)).fetchone()
-        if existing:
-            conn.execute("UPDATE markets SET active = 1, category = ? WHERE symbol = ?", (category, symbol))
-        else:
-            conn.execute(
-                "INSERT INTO markets (symbol, category, active, created_at) VALUES (?, ?, ?, ?)",
-                (symbol, category, 1, datetime.utcnow().isoformat()),
-            )
+        conn.execute(
+            "INSERT OR IGNORE INTO markets (symbol, category, active, created_at) VALUES (?, ?, ?, ?)"
+            , (symbol, category, 1, datetime.utcnow().isoformat())
+        )
     await ensure_market_task(symbol)
     await broadcast_update()
     return JSONResponse({"symbol": symbol, "category": category})
