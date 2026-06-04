@@ -45,6 +45,9 @@ DEFAULT_MARKETS = [
 
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "SHIB", "XRP", "ADA", "DOGE", "LTC", "BCH", "LINK", "AVAX"}
 CRYPTO_QUOTES = {"USD", "USDT", "USDC", "BUSD", "BTC", "ETH"}
+COINBASE_USD_MARKETS = {"BTC/USD", "ETH/USD", "SOL/USD", "SHIB/USD"}
+COINBASE_REST_SYNC_MARKETS = {"SHIB/USD"}
+COINBASE_REST_SYNC_SECONDS = 15
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -148,6 +151,8 @@ def normalize_symbol(raw_symbol: str) -> str:
 
 def detect_category(symbol: str) -> str:
     symbol = symbol.upper().replace(" ", "")
+    if symbol in COINBASE_USD_MARKETS:
+        return "crypto"
     if "/" in symbol:
         base, quote = symbol.split("/", 1)
         if base in CRYPTO_BASES and quote in CRYPTO_QUOTES:
@@ -158,11 +163,15 @@ def detect_category(symbol: str) -> str:
 
 
 def crypto_provider(symbol: str) -> str:
+    if symbol.upper().replace(" ", "") in COINBASE_USD_MARKETS:
+        return "coinbase"
     _, quote = symbol.upper().split("/", 1)
     return "coinbase" if quote == "USD" else "binance"
 
 
 def market_data_source(symbol: str, category: str) -> str:
+    if symbol.upper().replace(" ", "") in COINBASE_USD_MARKETS:
+        return "Coinbase Exchange USD"
     if category == "crypto":
         return "Coinbase Exchange USD" if crypto_provider(symbol) == "coinbase" else "Binance Spot"
     return "Twelve Data"
@@ -873,21 +882,46 @@ async def binance_listener(symbol: str) -> None:
 
 
 async def coinbase_listener(symbol: str) -> None:
+    if symbol in COINBASE_REST_SYNC_MARKETS:
+        sync_task = asyncio.create_task(coinbase_rest_sync_loop(symbol))
+    else:
+        sync_task = None
     product_id = symbol.replace("/", "-").upper()
     uri = "wss://ws-feed.exchange.coinbase.com"
-    async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
-        subscribe = {
-            "type": "subscribe",
-            "product_ids": [product_id],
-            "channels": ["ticker", "heartbeat"],
-        }
-        await ws.send(json.dumps(subscribe))
-        async for message in ws:
-            payload = json.loads(message)
-            if payload.get("type") == "ticker" and payload.get("product_id") == product_id:
-                price = parse_float(payload.get("price", 0))
-                add_price_tick(symbol, price)
-                await update_market_state(symbol)
+    try:
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+            subscribe = {
+                "type": "subscribe",
+                "product_ids": [product_id],
+                "channels": ["ticker", "heartbeat"],
+            }
+            await ws.send(json.dumps(subscribe))
+            async for message in ws:
+                payload = json.loads(message)
+                if payload.get("type") == "ticker" and payload.get("product_id") == product_id:
+                    price = parse_float(payload.get("price", 0))
+                    add_price_tick(symbol, price)
+                    await update_market_state(symbol)
+    finally:
+        if sync_task:
+            sync_task.cancel()
+            try:
+                await sync_task
+            except asyncio.CancelledError:
+                pass
+
+
+async def coinbase_rest_sync_loop(symbol: str) -> None:
+    while True:
+        await asyncio.sleep(COINBASE_REST_SYNC_SECONDS)
+        candles = await fetch_initial_candles(symbol, "crypto")
+        for candle in candles[-5:]:
+            add_candle(symbol, candle)
+        state = market_states.get(symbol)
+        if state:
+            state["data_status"] = "Datos en vivo desde Coinbase"
+            state["data_source"] = "Coinbase Exchange USD"
+        await update_market_state(symbol)
 
 
 async def twelvedata_listener(symbol: str) -> None:
