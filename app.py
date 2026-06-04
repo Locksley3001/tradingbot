@@ -40,10 +40,10 @@ DEFAULT_MARKETS = [
     "BTC/USD",
     "ETH/USD",
     "SOL/USD",
-    "EUR/USD",
+    "SHIB/USD",
 ]
 
-CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "LINK", "AVAX"}
+CRYPTO_BASES = {"BTC", "ETH", "SOL", "SHIB", "XRP", "ADA", "DOGE", "LTC", "BCH", "LINK", "AVAX"}
 CRYPTO_QUOTES = {"USD", "USDT", "USDC", "BUSD", "BTC", "ETH"}
 
 app = FastAPI()
