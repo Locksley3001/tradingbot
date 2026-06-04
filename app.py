@@ -39,6 +39,8 @@ MAX_SIGNAL_AGE_SECONDS = int(os.getenv("MAX_SIGNAL_AGE_SECONDS", "180"))
 DEFAULT_MARKETS = [
     "BTC/USD",
     "ETH/USD",
+    "SOL/USD",
+    "EUR/USD",
 ]
 
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "LINK", "AVAX"}
