@@ -8,42 +8,76 @@
   <script src="/static/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h1>Blitz Signals</h1>
-        <button id="silenceButton" class="silent-btn">Silenciar alertas</button>
-      </div>
-      <div class="market-add">
-        <input id="marketInput" placeholder="Buscar o activar mercado (AAPL, EUR/USD, SOL/USD)" />
-        <button id="addMarketButton">Activar</button>
-      </div>
-      <div id="marketList" class="market-list"></div>
-    </aside>
+  <div class="tab-bar">
+    <button id="operativeTab" class="tab-button active" type="button">Operativa</button>
+    <button id="statsTab" class="tab-button" type="button">Estadisticas</button>
+  </div>
 
-    <main class="main-panel">
-      <div class="chart-header">
+  <div id="operativeView" class="tab-view active">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>Blitz Signals</h1>
+          <button id="silenceButton" class="silent-btn">Silenciar alertas</button>
+        </div>
+        <div class="market-add">
+          <input id="marketInput" placeholder="Buscar o activar mercado (AAPL, EUR/USD, SOL/USD)" />
+          <button id="addMarketButton">Activar</button>
+        </div>
+        <div id="marketList" class="market-list"></div>
+      </aside>
+
+      <main class="main-panel">
+        <div class="chart-header">
+          <div>
+            <h2 id="selectedSymbol">Selecciona un mercado</h2>
+            <p id="selectedInfo">Ultimas 60 velas 1m - Senales en tiempo real</p>
+          </div>
+          <div class="chart-tools">
+            <button id="soundTestButton" class="test-btn secondary">Probar sonido</button>
+            <button id="telegramTestButton" class="test-btn">Probar Telegram</button>
+            <div class="score-badge" id="selectedScore">0</div>
+          </div>
+        </div>
+        <div id="chart" class="chart"></div>
+        <div id="telegramStatus" class="telegram-status"></div>
+        <div class="signal-summary" id="signalSummary"></div>
+      </main>
+
+      <aside class="history-panel">
+        <div class="history-header">
+          <h3>Historial de senales</h3>
+          <span id="historyCount" class="history-count">0</span>
+        </div>
+        <div class="history-list" id="historyList"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="statsView" class="tab-view">
+    <main class="stats-panel">
+      <div class="stats-header">
         <div>
-          <h2 id="selectedSymbol">Selecciona un mercado</h2>
-          <p id="selectedInfo">Últimas 60 velas 1m · Señales en tiempo real</p>
+          <h2>Estadisticas</h2>
+          <p>Metricas persistentes calculadas desde el historial completo.</p>
         </div>
-        <div class="chart-tools">
-          <button id="soundTestButton" class="test-btn secondary">Probar sonido</button>
-          <button id="telegramTestButton" class="test-btn">Probar Telegram</button>
-          <div class="score-badge" id="selectedScore">0</div>
-        </div>
+        <button id="refreshStatsButton" class="test-btn secondary" type="button">Actualizar</button>
       </div>
-      <div id="chart" class="chart"></div>
-      <div id="telegramStatus" class="telegram-status"></div>
-      <div class="signal-summary" id="signalSummary"></div>
+      <section id="statsSummary" class="stats-grid"></section>
+      <section class="stats-section">
+        <h3>Por mercado</h3>
+        <div id="marketStats" class="stats-table"></div>
+      </section>
+      <section class="stats-section">
+        <h3>Por confianza</h3>
+        <div id="confidenceStats" class="stats-table"></div>
+      </section>
+      <section class="stats-section">
+        <h3>Motivos de descarte</h3>
+        <div id="discardStats" class="stats-table"></div>
+      </section>
+      <section id="financialStats" class="stats-grid"></section>
     </main>
-
-    <aside class="history-panel">
-      <div class="history-header">
-        <h3>Historial de señales</h3>
-      </div>
-      <div class="history-list" id="historyList"></div>
-    </aside>
   </div>
 
   <script src="/static/script.js"></script>

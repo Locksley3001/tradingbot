@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +59,16 @@ websocket_clients: List[WebSocket] = []
 signal_history: List[Dict[str, Any]] = []
 alert_timestamps: Dict[str, float] = {}
 
+DISCARD_REASONS = [
+    "Mercado lateral",
+    "Tendencia contraria",
+    "Resistencia",
+    "Soporte",
+    "Volatilidad",
+    "No estaba operando",
+    "Otro",
+]
+
 
 def default_market_state() -> Dict[str, Any]:
     return {
@@ -92,8 +103,51 @@ def init_db() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
         if "signal_time" not in columns:
             conn.execute("ALTER TABLE signals ADD COLUMN signal_time INTEGER")
+        migrations = {
+            "signal_id": "TEXT",
+            "confidence": "TEXT",
+            "human_decision": "TEXT DEFAULT 'PENDIENTE'",
+            "discard_reason": "TEXT",
+            "total_amount": "REAL",
+            "payout": "REAL",
+            "result": "TEXT",
+            "profit": "REAL",
+            "generated_at": "INTEGER",
+            "decided_at": "INTEGER",
+        }
+        for column, definition in migrations.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {column} {definition}")
+        conn.execute(
+            """
+            UPDATE signals
+            SET signal_id = printf('SIG-%06d', id)
+            WHERE signal_id IS NULL OR signal_id = ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE signals
+            SET confidence = CASE
+                WHEN score >= 7 THEN 'Fuerte'
+                WHEN score >= ? THEN 'Media'
+                ELSE 'Debil'
+            END
+            WHERE confidence IS NULL OR confidence = ''
+            """,
+            (MIN_SCORE_TO_ALERT,),
+        )
+        conn.execute(
+            "UPDATE signals SET human_decision = 'PENDIENTE' WHERE human_decision IS NULL OR human_decision = ''"
+        )
+        conn.execute(
+            "UPDATE signals SET generated_at = COALESCE(signal_time, CAST(strftime('%s', created_at) AS INTEGER)) WHERE generated_at IS NULL"
+        )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS signals_unique_candle ON signals(symbol, signal_time, direction)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS signals_unique_signal_id ON signals(signal_id)"
         )
 
         existing = conn.execute("SELECT COUNT(*) as count FROM markets").fetchone()["count"]
@@ -106,28 +160,90 @@ def init_db() -> None:
                 )
 
 
-def load_signal_history(limit: int = 100) -> None:
+def direction_label(direction: str) -> str:
+    normalized = (direction or "").lower()
+    if normalized in ("call", "buy"):
+        return "BUY"
+    if normalized in ("put", "sell"):
+        return "SELL"
+    return (direction or "NONE").upper()
+
+
+def direction_class(direction: str) -> str:
+    normalized = (direction or "").lower()
+    if normalized in ("call", "buy"):
+        return "call"
+    if normalized in ("put", "sell"):
+        return "put"
+    return "none"
+
+
+def confidence_from_score(score: int) -> str:
+    if score >= 7:
+        return "Fuerte"
+    if score >= MIN_SCORE_TO_ALERT:
+        return "Media"
+    return "Debil"
+
+
+def parse_tags(raw_tags: Any) -> List[str]:
+    try:
+        tags = json.loads(raw_tags or "[]")
+        return tags if isinstance(tags, list) else []
+    except Exception:
+        return []
+
+
+def signal_payload(row: sqlite3.Row) -> Dict[str, Any]:
+    created_at = row["created_at"] or datetime.utcnow().isoformat()
+    try:
+        created_dt = datetime.fromisoformat(created_at)
+        time_text = created_dt.strftime("%H:%M:%S")
+    except Exception:
+        time_text = created_at
+    score = int(row["score"] or 0)
+    confidence = row["confidence"] or confidence_from_score(score)
+    decision = row["human_decision"] or "PENDIENTE"
+    return {
+        "id": row["id"],
+        "signal_id": row["signal_id"] or f"SIG-{int(row['id']):06d}",
+        "fecha": created_at,
+        "time": time_text,
+        "mercado": row["symbol"],
+        "symbol": row["symbol"],
+        "direccion": direction_label(row["direction"]),
+        "direction": direction_label(row["direction"]),
+        "direction_key": direction_class(row["direction"]),
+        "confianza": confidence,
+        "confidence": confidence,
+        "score": score,
+        "estado_inicial": "PENDIENTE",
+        "decision_humana": decision,
+        "motivo_descarte": row["discard_reason"] or "",
+        "monto_total": row["total_amount"],
+        "payout": row["payout"],
+        "resultado": row["result"] or "",
+        "profit": row["profit"],
+        "timestamp_generacion": row["generated_at"] or row["signal_time"],
+        "timestamp_decision": row["decided_at"],
+        "tags": parse_tags(row["tags"]),
+        "expiration": row["expiration"],
+    }
+
+
+def load_signal_history() -> None:
     signal_history.clear()
     with conn:
         rows = conn.execute(
-            "SELECT created_at, symbol, direction, score, tags, expiration FROM signals ORDER BY id DESC LIMIT ?",
-            (limit,),
+            """
+            SELECT id, signal_id, created_at, symbol, direction, score, tags, expiration,
+                   confidence, human_decision, discard_reason, total_amount, payout,
+                   result, profit, signal_time, generated_at, decided_at
+            FROM signals
+            ORDER BY id ASC
+            """,
         ).fetchall()
-    for row in reversed(rows):
-        try:
-            tags = json.loads(row["tags"] or "[]")
-        except Exception:
-            tags = []
-        signal_history.append(
-            {
-                "time": datetime.fromisoformat(row["created_at"]).strftime("%H:%M:%S"),
-                "symbol": row["symbol"],
-                "direction": row["direction"].upper(),
-                "score": row["score"],
-                "tags": tags,
-                "expiration": row["expiration"],
-            }
-        )
+    signal_history.extend(signal_payload(row) for row in rows)
 
 
 def normalize_symbol(raw_symbol: str) -> str:
@@ -651,7 +767,7 @@ async def send_telegram_alert(
 async def broadcast_update() -> None:
     data = {
         "markets": await get_markets_payload(),
-        "signals": signal_history[-100:],
+        "signals": signal_history,
     }
     for client in websocket_clients.copy():
         try:
@@ -764,11 +880,22 @@ async def update_market_state(symbol: str, force: bool = False) -> None:
         and signature != state.get("last_signal_signature")
     ):
         details = ", ".join(result["details"]) if result["details"] else "Señal"
+        created_at = datetime.utcnow()
+        signal_id = f"SIG-{uuid.uuid4().hex[:12].upper()}"
+        confidence = result.get("analysis", {}).get("confidence") or confidence_from_score(result["score"])
         with conn:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO signals (created_at, symbol, direction, score, tags, expiration, entry_price, details, signal_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT OR IGNORE INTO signals (
+                    signal_id, created_at, symbol, direction, score, tags, expiration,
+                    entry_price, details, signal_time, confidence, human_decision,
+                    generated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
-                    datetime.utcnow().isoformat(),
+                    signal_id,
+                    created_at.isoformat(),
                     symbol,
                     result["direction"],
                     result["score"],
@@ -777,21 +904,25 @@ async def update_market_state(symbol: str, force: bool = False) -> None:
                     result["entry_price"],
                     details,
                     signal_time,
+                    confidence,
+                    "PENDIENTE",
+                    signal_time or int(created_at.timestamp()),
                 ),
             )
         if cursor.rowcount:
-            signal_history.append(
-                {
-                    "time": datetime.utcnow().strftime("%H:%M:%S"),
-                    "symbol": symbol,
-                    "direction": result["direction"].upper(),
-                    "score": result["score"],
-                    "tags": result["tags"],
-                    "expiration": result["expiration"],
-                }
-            )
-            if len(signal_history) > 200:
-                del signal_history[:-200]
+            with conn:
+                row = conn.execute(
+                    """
+                    SELECT id, signal_id, created_at, symbol, direction, score, tags, expiration,
+                           confidence, human_decision, discard_reason, total_amount, payout,
+                           result, profit, signal_time, generated_at, decided_at
+                    FROM signals
+                    WHERE signal_id = ?
+                    """,
+                    (signal_id,),
+                ).fetchone()
+            if row:
+                signal_history.append(signal_payload(row))
         state["last_signal_signature"] = signature
 
     await broadcast_update()
@@ -906,6 +1037,118 @@ async def twelvedata_listener(symbol: str) -> None:
                 await update_market_state(symbol)
 
 
+SIGNAL_SELECT = """
+    SELECT id, signal_id, created_at, symbol, direction, score, tags, expiration,
+           confidence, human_decision, discard_reason, total_amount, payout,
+           result, profit, signal_time, generated_at, decided_at
+    FROM signals
+"""
+
+
+def get_signal_payload(signal_id: str) -> Optional[Dict[str, Any]]:
+    with conn:
+        row = conn.execute(
+            f"{SIGNAL_SELECT} WHERE signal_id = ?",
+            (signal_id,),
+        ).fetchone()
+    return signal_payload(row) if row else None
+
+
+def replace_signal_history_item(signal: Dict[str, Any]) -> None:
+    for index, item in enumerate(signal_history):
+        if item.get("signal_id") == signal.get("signal_id"):
+            signal_history[index] = signal
+            return
+    signal_history.append(signal)
+
+
+def safe_float(value: Any, field: str) -> float:
+    try:
+        number = float(value)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{field} invalido") from exc
+    if not math.isfinite(number) or number < 0:
+        raise HTTPException(status_code=400, detail=f"{field} invalido")
+    return number
+
+
+def percent(part: int, total: int) -> float:
+    return round((part / total) * 100, 2) if total else 0.0
+
+
+def build_stats() -> Dict[str, Any]:
+    with conn:
+        rows = conn.execute(f"{SIGNAL_SELECT} ORDER BY id ASC").fetchall()
+    signals = [signal_payload(row) for row in rows]
+    total = len(signals)
+    operated = [signal for signal in signals if signal["decision_humana"] == "OPERAR"]
+    ignored = [signal for signal in signals if signal["decision_humana"] == "IGNORAR"]
+    closed = [signal for signal in operated if signal["resultado"] in ("WIN", "LOSS")]
+    wins = [signal for signal in closed if signal["resultado"] == "WIN"]
+    losses = [signal for signal in closed if signal["resultado"] == "LOSS"]
+
+    by_market = []
+    markets = list(dict.fromkeys(DEFAULT_MARKETS + [signal["mercado"] for signal in signals]))
+    for market in markets:
+        market_signals = [signal for signal in signals if signal["mercado"] == market]
+        market_operated = [signal for signal in market_signals if signal["decision_humana"] == "OPERAR"]
+        market_closed = [signal for signal in market_operated if signal["resultado"] in ("WIN", "LOSS")]
+        market_wins = [signal for signal in market_closed if signal["resultado"] == "WIN"]
+        profit_total = sum(float(signal["profit"] or 0) for signal in market_closed)
+        by_market.append(
+            {
+                "market": market,
+                "generated": len(market_signals),
+                "operated": len(market_operated),
+                "win_rate": percent(len(market_wins), len(market_closed)),
+                "profit": round(profit_total, 2),
+            }
+        )
+
+    confidence_order = ["Fuerte", "Media", "Debil"]
+    confidences = list(dict.fromkeys(confidence_order + [signal["confianza"] for signal in signals]))
+    by_confidence = []
+    for confidence in confidences:
+        confidence_signals = [signal for signal in signals if signal["confianza"] == confidence]
+        confidence_operated = [signal for signal in confidence_signals if signal["decision_humana"] == "OPERAR"]
+        confidence_closed = [signal for signal in confidence_operated if signal["resultado"] in ("WIN", "LOSS")]
+        confidence_wins = [signal for signal in confidence_closed if signal["resultado"] == "WIN"]
+        by_confidence.append(
+            {
+                "confidence": confidence,
+                "generated": len(confidence_signals),
+                "operated": len(confidence_operated),
+                "win_rate": percent(len(confidence_wins), len(confidence_closed)),
+            }
+        )
+
+    discard_total = len(ignored)
+    discard_reasons = []
+    reasons = list(dict.fromkeys(DISCARD_REASONS + [signal["motivo_descarte"] for signal in ignored if signal["motivo_descarte"]]))
+    for reason in reasons:
+        count = sum(1 for signal in ignored if signal["motivo_descarte"] == reason)
+        discard_reasons.append({"reason": reason, "count": count, "percentage": percent(count, discard_total)})
+
+    return {
+        "summary": {
+            "generated": total,
+            "operated": len(operated),
+            "ignored": len(ignored),
+            "operated_percentage": percent(len(operated), total),
+            "ignored_percentage": percent(len(ignored), total),
+        },
+        "by_market": by_market,
+        "by_confidence": by_confidence,
+        "discard_reasons": discard_reasons,
+        "financial": {
+            "profit_total": round(sum(float(signal["profit"] or 0) for signal in closed), 2),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": percent(len(wins), len(closed)),
+        },
+    }
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     init_db()
@@ -981,7 +1224,89 @@ async def delete_market(symbol: str) -> JSONResponse:
 
 @app.get("/api/signals")
 async def get_signals() -> JSONResponse:
-    return JSONResponse(signal_history[-100:])
+    return JSONResponse(signal_history)
+
+
+@app.patch("/api/signals/{signal_id}/decision")
+async def update_signal_decision(signal_id: str, payload: Dict[str, Any]) -> JSONResponse:
+    signal_id = signal_id.strip()
+    action = str(payload.get("decision_humana") or payload.get("action") or "").strip().upper()
+    now = int(time.time())
+
+    if action == "IGNORAR":
+        reason = str(payload.get("motivo_descarte") or payload.get("reason") or "").strip()
+        if reason and reason not in DISCARD_REASONS:
+            reason = "Otro"
+        if not reason:
+            reason = "Otro"
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE signals
+                SET human_decision = 'IGNORAR',
+                    discard_reason = ?,
+                    decided_at = COALESCE(decided_at, ?)
+                WHERE signal_id = ?
+                """,
+                (reason, now, signal_id),
+            )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Senal no encontrada")
+    elif action == "OPERAR":
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE signals
+                SET human_decision = 'OPERAR',
+                    discard_reason = NULL,
+                    decided_at = COALESCE(decided_at, ?)
+                WHERE signal_id = ?
+                """,
+                (now, signal_id),
+            )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Senal no encontrada")
+    elif str(payload.get("resultado") or "").strip().upper() in ("WIN", "LOSS"):
+        result = str(payload.get("resultado") or "").strip().upper()
+        amount = safe_float(payload.get("monto_total"), "monto_total")
+        payout = safe_float(payload.get("payout"), "payout")
+        profit = amount * (payout / 100) if result == "WIN" else -amount
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE signals
+                SET human_decision = 'OPERAR',
+                    total_amount = ?,
+                    payout = ?,
+                    result = ?,
+                    profit = ?,
+                    discard_reason = NULL,
+                    decided_at = COALESCE(decided_at, ?)
+                WHERE signal_id = ?
+                """,
+                (amount, payout, result, profit, now, signal_id),
+            )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Senal no encontrada")
+    else:
+        raise HTTPException(status_code=400, detail="Decision invalida")
+
+    signal = get_signal_payload(signal_id)
+    if not signal:
+        raise HTTPException(status_code=404, detail="Senal no encontrada")
+    replace_signal_history_item(signal)
+    await broadcast_update()
+    return JSONResponse(signal)
+
+
+@app.get("/api/stats")
+async def get_stats() -> JSONResponse:
+    return JSONResponse(build_stats())
+
+
+@app.get("/api/discard-reasons")
+async def get_discard_reasons() -> JSONResponse:
+    return JSONResponse(DISCARD_REASONS)
 
 
 @app.post("/api/telegram/test")

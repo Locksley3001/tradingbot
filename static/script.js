@@ -1,5 +1,6 @@
 const marketList = document.getElementById('marketList');
 const historyList = document.getElementById('historyList');
+const historyCount = document.getElementById('historyCount');
 const selectedSymbolEl = document.getElementById('selectedSymbol');
 const selectedInfoEl = document.getElementById('selectedInfo');
 const selectedScoreEl = document.getElementById('selectedScore');
@@ -10,6 +11,16 @@ const silenceButton = document.getElementById('silenceButton');
 const telegramTestButton = document.getElementById('telegramTestButton');
 const telegramStatusEl = document.getElementById('telegramStatus');
 const soundTestButton = document.getElementById('soundTestButton');
+const operativeTab = document.getElementById('operativeTab');
+const statsTab = document.getElementById('statsTab');
+const operativeView = document.getElementById('operativeView');
+const statsView = document.getElementById('statsView');
+const refreshStatsButton = document.getElementById('refreshStatsButton');
+const statsSummary = document.getElementById('statsSummary');
+const marketStats = document.getElementById('marketStats');
+const confidenceStats = document.getElementById('confidenceStats');
+const discardStats = document.getElementById('discardStats');
+const financialStats = document.getElementById('financialStats');
 
 let markets = [];
 let selectedSymbol = null;
@@ -22,7 +33,19 @@ let lowerSeries;
 let markerApi;
 let searchDebounce;
 let websocketPrimed = false;
+let lastSignals = [];
 const playedSignalKeys = new Set();
+const expandedIgnore = new Set();
+const expandedOperate = new Set();
+const discardReasons = [
+  'Mercado lateral',
+  'Tendencia contraria',
+  'Resistencia',
+  'Soporte',
+  'Volatilidad',
+  'No estaba operando',
+  'Otro',
+];
 
 async function playAlertTone() {
   try {
@@ -67,6 +90,42 @@ async function playAlertTone() {
 function signalKey(market) {
   if (!market || market.signal_status !== 'confirmed' || market.direction === 'none') return '';
   return `${market.symbol}:${market.direction}:${market.signal_time || ''}:${market.score}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatMoney(value) {
+  const number = Number(value || 0);
+  return number.toLocaleString('es-CO', { maximumFractionDigits: 2 });
+}
+
+function formatPercent(value) {
+  const number = Number(value || 0);
+  return `${number.toFixed(2)}%`;
+}
+
+function signalDirectionClass(item) {
+  return item.direction_key || String(item.direction || item.direccion || '').toLowerCase();
+}
+
+async function patchSignal(signalId, payload) {
+  const res = await fetch(`/api/signals/${encodeURIComponent(signalId)}/decision`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const updated = await res.json();
+  lastSignals = lastSignals.map((signal) => signal.signal_id === signalId ? updated : signal);
+  renderHistory(lastSignals);
+  fetchStats();
 }
 
 function createSeries(type, options) {
@@ -406,7 +465,7 @@ telegramTestButton.addEventListener('click', async () => {
   }
 });
 
-function renderHistory(signals) {
+function renderHistoryLegacy(signals) {
   historyList.innerHTML = '';
   signals.slice().reverse().forEach((item) => {
     const row = document.createElement('div');
@@ -424,10 +483,183 @@ function renderHistory(signals) {
   });
 }
 
+function renderHistory(signals) {
+  lastSignals = Array.isArray(signals) ? signals : [];
+  historyList.innerHTML = '';
+  if (historyCount) historyCount.textContent = String(lastSignals.length);
+  lastSignals.slice().reverse().forEach((item) => {
+    const signalId = item.signal_id;
+    const decision = item.decision_humana || 'PENDIENTE';
+    const direction = item.direccion || item.direction || '';
+    const tags = item.tags?.length ? item.tags.join(' - ') : 'Sin tags';
+    const confidence = item.confianza || item.confidence || '';
+    const showIgnore = expandedIgnore.has(signalId) && decision === 'PENDIENTE';
+    const showOperate = expandedOperate.has(signalId) && (decision === 'PENDIENTE' || decision === 'OPERAR') && !item.resultado;
+    const reasonOptions = discardReasons.map((reason) => (
+      `<option value="${escapeHtml(reason)}"${item.motivo_descarte === reason ? ' selected' : ''}>${escapeHtml(reason)}</option>`
+    )).join('');
+    const row = document.createElement('div');
+    row.className = 'history-item';
+    row.dataset.signalId = signalId;
+    row.innerHTML = `
+      <span class="history-time">${escapeHtml(item.time)}</span>
+      <span class="history-main">
+        <strong>${escapeHtml(item.mercado || item.symbol)} <small>${escapeHtml(signalId)}</small></strong>
+        <span>${escapeHtml(tags)}</span>
+        <span>Confianza: ${escapeHtml(confidence)} - Estado: ${escapeHtml(decision)}</span>
+      </span>
+      <span class="pill ${signalDirectionClass(item)}">${escapeHtml(direction)}</span>
+      <span class="history-score">${escapeHtml(item.score)}</span>
+      <div class="history-actions">
+        ${decision === 'PENDIENTE' ? `
+          <button type="button" data-action="operate">OPERAR</button>
+          <button type="button" data-action="ignore">IGNORAR</button>
+        ` : ''}
+        ${decision === 'IGNORAR' ? `<span class="decision-note">Ignorada: ${escapeHtml(item.motivo_descarte || 'Otro')}</span>` : ''}
+        ${decision === 'OPERAR' && !item.resultado ? `<span class="decision-note">Operada - pendiente resultado</span>` : ''}
+        ${item.resultado ? `<span class="decision-note ${item.resultado.toLowerCase()}">${escapeHtml(item.resultado)} - Profit ${formatMoney(item.profit)}</span>` : ''}
+      </div>
+      ${showIgnore ? `
+        <div class="inline-editor">
+          <select data-field="reason">${reasonOptions}</select>
+          <button type="button" data-action="save-ignore">Guardar</button>
+        </div>
+      ` : ''}
+      ${showOperate ? `
+        <div class="inline-editor trade-editor">
+          <input data-field="amount" inputmode="decimal" placeholder="Monto" value="${escapeHtml(item.monto_total || '')}" />
+          <input data-field="payout" inputmode="decimal" placeholder="Payout %" value="${escapeHtml(item.payout || '')}" />
+          <button type="button" data-action="win">WIN</button>
+          <button type="button" data-action="loss">LOSS</button>
+        </div>
+      ` : ''}
+    `;
+    historyList.appendChild(row);
+  });
+}
+
 async function fetchHistory() {
   const res = await fetch('/api/signals', { cache: 'no-store' });
   if (res.ok) renderHistory(await res.json());
 }
+
+historyList.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const row = button.closest('.history-item');
+  const signalId = row?.dataset.signalId;
+  if (!signalId) return;
+  const action = button.dataset.action;
+  try {
+    if (action === 'ignore') {
+      expandedIgnore.add(signalId);
+      expandedOperate.delete(signalId);
+      renderHistory(lastSignals);
+    } else if (action === 'operate') {
+      expandedOperate.add(signalId);
+      expandedIgnore.delete(signalId);
+      await patchSignal(signalId, { decision_humana: 'OPERAR' });
+      expandedOperate.add(signalId);
+      renderHistory(lastSignals);
+    } else if (action === 'save-ignore') {
+      const reason = row.querySelector('[data-field="reason"]')?.value || 'Otro';
+      await patchSignal(signalId, { decision_humana: 'IGNORAR', motivo_descarte: reason });
+      expandedIgnore.delete(signalId);
+    } else if (action === 'win' || action === 'loss') {
+      const amount = row.querySelector('[data-field="amount"]')?.value;
+      const payout = row.querySelector('[data-field="payout"]')?.value;
+      await patchSignal(signalId, {
+        resultado: action === 'win' ? 'WIN' : 'LOSS',
+        monto_total: amount,
+        payout,
+      });
+      expandedOperate.delete(signalId);
+    }
+  } catch (error) {
+    console.error('No se pudo actualizar la senal', error);
+  }
+});
+
+function statsCard(label, value) {
+  return `
+    <div class="stats-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderStatsTable(headers, rows) {
+  return `
+    <table>
+      <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+async function fetchStats() {
+  if (!statsSummary) return;
+  const res = await fetch('/api/stats', { cache: 'no-store' });
+  if (!res.ok) return;
+  const stats = await res.json();
+  const summary = stats.summary || {};
+  const financial = stats.financial || {};
+  statsSummary.innerHTML = [
+    statsCard('Senales generadas', summary.generated ?? 0),
+    statsCard('Senales operadas', summary.operated ?? 0),
+    statsCard('Senales ignoradas', summary.ignored ?? 0),
+    statsCard('Porcentaje operado', formatPercent(summary.operated_percentage)),
+    statsCard('Porcentaje ignorado', formatPercent(summary.ignored_percentage)),
+  ].join('');
+  marketStats.innerHTML = renderStatsTable(
+    ['Mercado', 'Generadas', 'Operadas', 'Win Rate', 'Profit'],
+    (stats.by_market || []).map((item) => [
+      item.market,
+      item.generated,
+      item.operated,
+      formatPercent(item.win_rate),
+      formatMoney(item.profit),
+    ]),
+  );
+  confidenceStats.innerHTML = renderStatsTable(
+    ['Confianza', 'Generadas', 'Operadas', 'Win Rate'],
+    (stats.by_confidence || []).map((item) => [
+      item.confidence,
+      item.generated,
+      item.operated,
+      formatPercent(item.win_rate),
+    ]),
+  );
+  discardStats.innerHTML = renderStatsTable(
+    ['Motivo', 'Conteo', 'Porcentaje'],
+    (stats.discard_reasons || []).map((item) => [
+      item.reason,
+      item.count,
+      formatPercent(item.percentage),
+    ]),
+  );
+  financialStats.innerHTML = [
+    statsCard('Profit total', formatMoney(financial.profit_total)),
+    statsCard('Operaciones ganadas', financial.wins ?? 0),
+    statsCard('Operaciones perdidas', financial.losses ?? 0),
+    statsCard('Win Rate general', formatPercent(financial.win_rate)),
+  ].join('');
+}
+
+function setActiveTab(tab) {
+  const isStats = tab === 'stats';
+  operativeTab.classList.toggle('active', !isStats);
+  statsTab.classList.toggle('active', isStats);
+  operativeView.classList.toggle('active', !isStats);
+  statsView.classList.toggle('active', isStats);
+  if (isStats) fetchStats();
+  else setTimeout(resizeChart, 0);
+}
+
+operativeTab.addEventListener('click', () => setActiveTab('operative'));
+statsTab.addEventListener('click', () => setActiveTab('stats'));
+refreshStatsButton.addEventListener('click', fetchStats);
 
 async function initWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -470,4 +702,5 @@ async function initWebSocket() {
 createChart();
 fetchMarkets();
 fetchHistory();
+fetchStats();
 initWebSocket();

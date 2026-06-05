@@ -32,6 +32,35 @@ body {
   color: var(--text);
 }
 
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+
+.tab-button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--muted);
+  padding: 9px 14px;
+  cursor: pointer;
+}
+
+.tab-button.active {
+  background: #1d4f8d;
+  border-color: rgba(78, 168, 255, 0.55);
+  color: #fff;
+}
+
+.tab-view {
+  display: none;
+}
+
+.tab-view.active {
+  display: block;
+}
+
 button,
 input {
   font: inherit;
@@ -45,7 +74,7 @@ button {
   display: grid;
   grid-template-columns: 320px minmax(520px, 1fr) 320px;
   gap: 16px;
-  min-height: 100vh;
+  min-height: calc(100vh - 53px);
   padding: 16px;
 }
 
@@ -95,6 +124,18 @@ button {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 0.92rem;
+}
+
+.history-count {
+  display: inline-grid;
+  min-width: 34px;
+  height: 26px;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
 }
 
 .market-add {
@@ -388,12 +429,83 @@ button {
   white-space: nowrap;
 }
 
+.history-main small {
+  color: var(--faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .history-main span {
   color: var(--muted);
 }
 
 .history-score {
   font-weight: 800;
+}
+
+.history-actions,
+.inline-editor {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-actions button,
+.inline-editor button {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  padding: 7px 9px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.history-actions button:hover,
+.inline-editor button:hover {
+  border-color: rgba(78, 168, 255, 0.5);
+}
+
+.inline-editor {
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  padding-top: 10px;
+}
+
+.inline-editor select,
+.inline-editor input {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: #0a1224;
+  color: var(--text);
+  padding: 8px 9px;
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.inline-editor select {
+  flex: 1 1 150px;
+}
+
+.trade-editor input {
+  flex: 1 1 90px;
+}
+
+.decision-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.decision-note.win {
+  color: var(--success);
+}
+
+.decision-note.loss {
+  color: var(--danger);
 }
 
 .pill {
@@ -411,6 +523,100 @@ button {
 .pill.put {
   background: rgba(255, 92, 124, 0.18);
   color: #ffafc0;
+}
+
+.stats-panel {
+  display: grid;
+  gap: 16px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.stats-header,
+.stats-section {
+  background: color-mix(in srgb, var(--panel) 92%, #ffffff 8%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.stats-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 18px;
+}
+
+.stats-header h2,
+.stats-header p,
+.stats-section h3 {
+  margin: 0;
+}
+
+.stats-header p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.stats-card {
+  display: grid;
+  gap: 8px;
+  min-height: 84px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d1730;
+  padding: 14px;
+}
+
+.stats-card span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.stats-card strong {
+  font-size: 1.25rem;
+}
+
+.stats-section {
+  overflow: hidden;
+}
+
+.stats-section h3 {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  font-size: 0.98rem;
+}
+
+.stats-table {
+  overflow-x: auto;
+}
+
+.stats-table table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 560px;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  text-align: left;
+  font-size: 0.86rem;
+}
+
+.stats-table th {
+  color: var(--muted);
+  font-weight: 800;
 }
 
 @media (max-width: 1180px) {
@@ -434,7 +640,8 @@ button {
   }
 
   .chart-header,
-  .sidebar-header {
+  .sidebar-header,
+  .stats-header {
     align-items: flex-start;
     flex-direction: column;
   }
